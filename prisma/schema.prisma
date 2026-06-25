@@ -1,0 +1,494 @@
+// 勤怠・申請・産業医連携管理システム — Prisma schema
+// 注: ローカルMVPは SQLite。SQLite は enum 非対応のため、列挙値は String + アプリ層(Zod)で制約。
+//     PostgreSQL へ移行する場合は datasource provider を postgresql に変更し、
+//     String の列挙はそのまま、もしくは native enum へ置換可能（README参照）。
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// ============================================================
+// マスタ系
+// ============================================================
+
+/// 従業員 / ユーザー
+model User {
+  id             String   @id @default(cuid())
+  employeeCode   String   @unique
+  email          String   @unique
+  passwordHash   String
+  name           String
+  /// role: employee | first_approver | second_approver | admin | occupational_physician
+  role           String   @default("employee")
+  isActive       Boolean  @default(true)
+
+  departmentId     String?
+  department       Department?      @relation(fields: [departmentId], references: [id])
+  employmentTypeId String?
+  employmentType   EmploymentType?  @relation(fields: [employmentTypeId], references: [id])
+
+  // レポートライン（承認者）。従業員マスタから自動判定に使用。
+  firstApproverId  String?
+  firstApprover    User?    @relation("FirstApprover", fields: [firstApproverId], references: [id])
+  secondApproverId String?
+  secondApprover   User?    @relation("SecondApprover", fields: [secondApproverId], references: [id])
+  firstApproverFor  User[]  @relation("FirstApprover")
+  secondApproverFor User[]  @relation("SecondApprover")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  attendanceRecords   AttendanceRecord[]
+  pcActivityLogs      PcActivityLog[]
+  applications        Application[]        @relation("Applicant")
+  correctionRequests  CorrectionRequest[]  @relation("CorrectionApplicant")
+  approvalSteps       ApplicationApprovalStep[] @relation("StepApprover")
+  approvalComments    ApprovalComment[]
+  notifications       Notification[]
+  auditLogs           AuditLog[]
+  paidLeaveBalances   PaidLeaveBalance[]
+  monthlyClosings     MonthlyAttendanceClosing[]
+  monthlyApprovalLogs MonthlyApprovalLog[] @relation("MonthlyApprover")
+  physicianComments   OccupationalPhysicianComment[]
+  laborRiskAlerts     LaborRiskAlert[]
+  reportItems         OccupationalHealthReportItem[]
+  generatedReports    OccupationalHealthReport[] @relation("ReportGenerator")
+
+  @@index([role])
+  @@index([departmentId])
+  @@map("users")
+}
+
+/// 所属部門
+model Department {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users      User[]
+  reportItems OccupationalHealthReportItem[]
+
+  @@map("departments")
+}
+
+/// 雇用区分（正社員・契約・パート等）
+model EmploymentType {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users User[]
+
+  @@map("employment_types")
+}
+
+/// 勤務区分（通常・在宅・出張・休日出勤・深夜等）
+model WorkType {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  isHoliday   Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  attendanceRecords AttendanceRecord[]
+
+  @@map("work_types")
+}
+
+// ============================================================
+// 勤怠系
+// ============================================================
+
+/// 日次勤怠
+model AttendanceRecord {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  workDate    DateTime // 対象日（00:00基準）
+  clockIn     DateTime?
+  clockOut    DateTime?
+  breakMinutes Int     @default(0)
+
+  workTypeId  String?
+  workType    WorkType? @relation(fields: [workTypeId], references: [id])
+
+  // 集計（分）。確定/修正時に再計算。
+  workMinutes     Int @default(0)
+  overtimeMinutes Int @default(0)
+  nightMinutes    Int @default(0)
+  isHolidayWork   Boolean @default(false)
+
+  /// source: auto | manual
+  source String @default("auto")
+  /// status: unconfirmed(要確認) | needs_review | normal | submitted | locked
+  status String @default("unconfirmed")
+  locked Boolean @default(false)
+
+  note String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  correctionRequests CorrectionRequest[]
+
+  @@unique([userId, workDate])
+  @@index([userId])
+  @@index([workDate])
+  @@map("attendance_records")
+}
+
+/// PC起動/終了ログ（監査証跡・改ざん不可で追記のみ）
+model PcActivityLog {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  terminalId String
+  /// eventType: startup | shutdown | logon | logoff
+  eventType  String
+  occurredAt DateTime
+  ipAddress  String?
+  rawPayload String?  // 受信した生データ(JSON文字列)
+  createdAt  DateTime @default(now())
+
+  @@index([userId, occurredAt])
+  @@index([eventType])
+  @@map("pc_activity_logs")
+}
+
+// ============================================================
+// 申請・承認系
+// ============================================================
+
+/// 申請（有給/研修/出張/打刻修正/月次確定 を統一管理）
+model Application {
+  id            String   @id @default(cuid())
+  /// applicationType: paid_leave | training | business_trip | correction
+  applicationType String
+  applicantId   String
+  applicant     User     @relation("Applicant", fields: [applicantId], references: [id])
+
+  title          String
+  targetStartAt  DateTime?
+  targetEndAt    DateTime?
+  content        String   // 内容
+  expectedEffect String?  // 予測効果
+  attachmentPath String?  // 添付資料(任意)
+  comment        String?  // コメント(任意)
+  /// 出張区分（business_trip のみ）: domestic(国内) | overseas(海外)
+  tripType       String?
+
+  /// status: draft | submitted | first_approved | second_approved | first_rejected | second_rejected | cancelled | rejected
+  status        String   @default("draft")
+  /// 現在処理中の承認段階: 0(未提出/完了) | 1(1次待ち) | 2(2次待ち)
+  currentStepLevel Int   @default(0)
+  resubmitCount Int      @default(0)
+
+  firstApproverId  String?
+  secondApproverId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  submittedAt DateTime?
+  completedAt DateTime?
+
+  correctionRequest CorrectionRequest?
+  approvalSteps     ApplicationApprovalStep[]
+  approvalComments  ApprovalComment[]
+  notifications     Notification[]
+
+  @@index([applicantId])
+  @@index([status])
+  @@index([applicationType])
+  @@map("applications")
+}
+
+/// 打刻修正申請の詳細（修正前後の値）
+model CorrectionRequest {
+  id          String   @id @default(cuid())
+  applicationId String @unique
+  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  attendanceRecordId String
+  attendanceRecord   AttendanceRecord @relation(fields: [attendanceRecordId], references: [id])
+
+  applicantId String
+  applicant   User @relation("CorrectionApplicant", fields: [applicantId], references: [id])
+
+  beforeClockIn   DateTime?
+  afterClockIn    DateTime?
+  beforeClockOut  DateTime?
+  afterClockOut   DateTime?
+  beforeBreakMinutes Int?
+  afterBreakMinutes  Int?
+  beforeWorkTypeId String?
+  afterWorkTypeId  String?
+
+  reason String // 修正理由（必須）
+
+  createdAt DateTime @default(now())
+
+  @@index([attendanceRecordId])
+  @@map("correction_requests")
+}
+
+/// 2階層承認ステップ
+model ApplicationApprovalStep {
+  id            String   @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  stepLevel     Int      // 1 = 1次, 2 = 2次
+  approverId    String?
+  approver      User?    @relation("StepApprover", fields: [approverId], references: [id])
+  /// decision: pending | approved | rejected
+  decision      String   @default("pending")
+  comment       String?
+  decidedAt     DateTime?
+  createdAt     DateTime @default(now())
+
+  @@index([applicationId])
+  @@index([approverId, decision])
+  @@map("application_approval_steps")
+}
+
+/// 承認/差戻しコメント（スレッド）
+model ApprovalComment {
+  id            String   @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  authorId      String
+  author        User     @relation(fields: [authorId], references: [id])
+  body          String
+  /// kind: comment | approve | reject | resubmit
+  kind          String   @default("comment")
+  createdAt     DateTime @default(now())
+
+  @@index([applicationId])
+  @@map("approval_comments")
+}
+
+// ============================================================
+// 通知・監査
+// ============================================================
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  /// type: application_received | first_approved | second_approved | rejected | resubmitted | approval_request | monthly_unsubmitted | long_work_alert | physician_shared
+  type      String
+  title     String
+  body      String
+  linkUrl   String?
+  /// channel: in_app | email
+  channel   String   @default("in_app")
+  isRead    Boolean  @default(false)
+  readAt    DateTime?
+  relatedApplicationId String?
+  relatedApplication   Application? @relation(fields: [relatedApplicationId], references: [id])
+  emailSentAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+/// 監査ログ（追記専用）。産業医閲覧ログ・CSV/PDFダウンロード履歴もここに記録。
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id])
+  action     String   // create | update | approve | reject | resubmit | login | export_csv | export_pdf | physician_view | lock | ...
+  entityType String   // Application | AttendanceRecord | MonthlyAttendanceClosing | ...
+  entityId   String?
+  beforeJson String?  // 変更前(JSON文字列)
+  afterJson  String?  // 変更後(JSON文字列)
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+  @@map("audit_logs")
+}
+
+/// 有給休暇残数
+model PaidLeaveBalance {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  fiscalYear  Int
+  grantedDays Float    @default(0)
+  usedDays    Float    @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, fiscalYear])
+  @@map("paid_leave_balances")
+}
+
+// ============================================================
+// 月次確定・電子承認
+// ============================================================
+
+model MonthlyAttendanceClosing {
+  id      String @id @default(cuid())
+  userId  String
+  user    User   @relation(fields: [userId], references: [id])
+  year    Int
+  month   Int
+
+  // 集計値
+  attendanceDays  Int @default(0)
+  totalWorkMinutes Int @default(0)
+  overtimeMinutes Int @default(0)
+  nightMinutes    Int @default(0)
+  holidayWorkDays Int @default(0)
+  paidLeaveDays   Float @default(0)
+
+  /// status: open | submitted | first_approved | second_approved | locked | reopened
+  status   String @default("open")
+  locked   Boolean @default(false)
+
+  firstApproverId  String?
+  secondApproverId String?
+
+  submittedAt DateTime?
+  lockedAt    DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  approvalLogs MonthlyApprovalLog[]
+
+  @@unique([userId, year, month])
+  @@index([status])
+  @@map("monthly_attendance_closings")
+}
+
+/// 月次の電子承認ログ（押印代替の証跡）
+model MonthlyApprovalLog {
+  id        String   @id @default(cuid())
+  closingId String
+  closing   MonthlyAttendanceClosing @relation(fields: [closingId], references: [id], onDelete: Cascade)
+  stepLevel Int      // 1 | 2
+  approverId String?
+  approver   User?   @relation("MonthlyApprover", fields: [approverId], references: [id])
+  /// decision: pending | approved | rejected
+  decision  String   @default("pending")
+  comment   String?
+  decidedAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([closingId])
+  @@map("monthly_approval_logs")
+}
+
+// ============================================================
+// 産業医連携
+// ============================================================
+
+/// 産業医共有レポート（月次バッチ）
+model OccupationalHealthReport {
+  id          String   @id @default(cuid())
+  year        Int
+  month       Int
+  generatedById String?
+  generatedBy   User?  @relation("ReportGenerator", fields: [generatedById], references: [id])
+  /// status: draft | shared
+  status      String   @default("draft")
+  note        String?
+  generatedAt DateTime @default(now())
+  sharedAt    DateTime?
+
+  items OccupationalHealthReportItem[]
+
+  @@unique([year, month])
+  @@map("occupational_health_reports")
+}
+
+/// 産業医共有レポート明細（従業員ごと）
+model OccupationalHealthReportItem {
+  id        String   @id @default(cuid())
+  reportId  String
+  report    OccupationalHealthReport @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  departmentId String?
+  department Department? @relation(fields: [departmentId], references: [id])
+
+  totalWorkMinutes Int @default(0)
+  overtimeMinutes  Int @default(0)
+  nightMinutes     Int @default(0)
+  holidayWorkDays  Int @default(0)
+  paidLeaveDays    Float @default(0)
+
+  over45            Boolean @default(false)
+  over80            Boolean @default(false)
+  interviewCandidate Boolean @default(false)
+
+  createdAt DateTime @default(now())
+
+  comments      OccupationalPhysicianComment[]
+  reviewStatus  MedicalReviewStatus?
+
+  @@unique([reportId, userId])
+  @@index([userId])
+  @@map("occupational_health_report_items")
+}
+
+/// 産業医コメント
+model OccupationalPhysicianComment {
+  id           String   @id @default(cuid())
+  reportItemId String
+  reportItem   OccupationalHealthReportItem @relation(fields: [reportItemId], references: [id], onDelete: Cascade)
+  physicianId  String
+  physician    User     @relation(fields: [physicianId], references: [id])
+  body         String
+  createdAt    DateTime @default(now())
+
+  @@index([reportItemId])
+  @@map("occupational_physician_comments")
+}
+
+/// 産業医確認ステータス
+model MedicalReviewStatus {
+  id           String   @id @default(cuid())
+  reportItemId String   @unique
+  reportItem   OccupationalHealthReportItem @relation(fields: [reportItemId], references: [id], onDelete: Cascade)
+  /// status: pending | shared | physician_reviewed
+  status       String   @default("pending")
+  reviewedByPhysicianId String?
+  reviewedAt   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("medical_review_statuses")
+}
+
+/// 労務リスクアラート
+model LaborRiskAlert {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  /// alertType: over45 | over80 | consecutive_long | night_increase | holiday_increase | low_paid_leave | month_unconfirmed | approval_delay
+  alertType String
+  /// severity: info | warning | critical
+  severity  String   @default("warning")
+  year      Int
+  month     Int
+  message   String
+  isResolved Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([alertType, isResolved])
+  @@map("labor_risk_alerts")
+}

@@ -1,0 +1,162 @@
+@import "tailwindcss";
+
+/* ============================================================
+   ブランド / カラーパレット (要件 14.3)
+   ============================================================ */
+:root {
+  --primary: #0f172a; /* サイドバー・ヘッダー・メインボタン */
+  --secondary: #1e293b; /* サブメニュー・セクションタイトル */
+  --accent: #2563eb; /* 承認待ち・アクション・リンク */
+  --success: #16a34a; /* 承認完了・正常終了 */
+  --warning: #f59e0b; /* 差戻し・注意喚起 */
+  --error: #dc2626; /* 却下・エラー */
+  --bg: #f8fafc; /* システム背景 */
+  --card: #ffffff; /* カード */
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --sidebar-text: #cbd5e1;
+}
+
+.dark {
+  --primary: #0f172a;
+  --secondary: #1e293b;
+  --accent: #3b82f6;
+  --success: #22c55e;
+  --warning: #fbbf24;
+  --error: #ef4444;
+  --bg: #0b1120;
+  --card: #111827;
+  --border: #1f2937;
+  --text: #e5e7eb;
+  --text-muted: #94a3b8;
+  --sidebar-text: #cbd5e1;
+}
+
+@theme inline {
+  --color-primary: var(--primary);
+  --color-secondary: var(--secondary);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-error: var(--error);
+  --color-bg: var(--bg);
+  --color-card: var(--card);
+  --color-border: var(--border);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+* {
+  border-color: var(--border);
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============================================================
+   コンポーネントユーティリティ
+   ============================================================ */
+@layer components {
+  .card {
+    @apply rounded-xl border bg-[var(--card)] shadow-sm;
+    border-color: var(--border);
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-primary {
+    background: var(--primary);
+    @apply text-white hover:opacity-90;
+  }
+  .btn-accent {
+    background: var(--accent);
+    @apply text-white hover:opacity-90;
+  }
+  .btn-success {
+    background: var(--success);
+    @apply text-white hover:opacity-90;
+  }
+  .btn-danger {
+    background: var(--error);
+    @apply text-white hover:opacity-90;
+  }
+  .btn-warning {
+    background: var(--warning);
+    @apply text-white hover:opacity-90;
+  }
+  .btn-outline {
+    @apply border bg-transparent hover:bg-black/5 dark:hover:bg-white/5;
+    color: var(--text);
+    border-color: var(--border);
+  }
+  .btn-ghost {
+    @apply bg-transparent hover:bg-black/5 dark:hover:bg-white/5;
+    color: var(--text);
+  }
+
+  .input {
+    @apply w-full rounded-lg border bg-[var(--card)] px-3 py-2 text-sm outline-none transition focus:ring-2;
+    border-color: var(--border);
+    color: var(--text);
+  }
+  .input:focus {
+    --tw-ring-color: var(--accent);
+    border-color: var(--accent);
+  }
+  .label {
+    @apply mb-1 block text-sm font-medium;
+    color: var(--text);
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold;
+  }
+  .badge-success { background: color-mix(in srgb, var(--success) 15%, transparent); color: var(--success); }
+  .badge-info { background: color-mix(in srgb, var(--accent) 15%, transparent); color: var(--accent); }
+  .badge-warning { background: color-mix(in srgb, var(--warning) 18%, transparent); color: #b45309; }
+  .badge-error { background: color-mix(in srgb, var(--error) 15%, transparent); color: var(--error); }
+  .badge-muted { background: color-mix(in srgb, var(--text-muted) 15%, transparent); color: var(--text-muted); }
+
+  .table-base {
+    @apply w-full text-sm;
+  }
+  .table-base thead th {
+    @apply px-3 py-2 text-left text-xs font-semibold;
+    color: var(--text-muted);
+    border-bottom: 1px solid var(--border);
+  }
+  .table-base tbody td {
+    @apply px-3 py-2.5;
+    border-bottom: 1px solid var(--border);
+  }
+  .table-base tbody tr:hover {
+    background: color-mix(in srgb, var(--accent) 5%, transparent);
+  }
+
+  .sidebar-link {
+    @apply flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors;
+    color: var(--sidebar-text);
+  }
+  .sidebar-link:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: #fff;
+  }
+  .sidebar-link.active {
+    background: var(--accent);
+    color: #fff;
+  }
+}
+
+/* 印刷（PDF出力用） */
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; }
+  .card { box-shadow: none; border: 1px solid #ccc; }
+}
